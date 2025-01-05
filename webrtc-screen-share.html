@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Screen Sharing with WebRTC</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.4.7/peerjs.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f0f2f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        #video {
+            width: 100%;
+            max-width: 1000px;
+            border-radius: 8px;
+            margin: 20px 0;
+            background: #000;
+        }
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            background: #0066cc;
+            color: white;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #0052a3;
+        }
+        button:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+        }
+        .share-url {
+            padding: 10px;
+            background: #e9ecef;
+            border-radius: 4px;
+            margin: 10px 0;
+            word-break: break-all;
+        }
+        .options {
+            margin: 20px 0;
+        }
+        .checkbox-group {
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Screen Sharing</h1>
+        
+        <div class="options">
+            <div class="checkbox-group">
+                <input type="checkbox" id="microphoneToggle">
+                <label for="microphoneToggle">Include Microphone</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="systemAudioToggle">
+                <label for="systemAudioToggle">Include System Audio</label>
+            </div>
+        </div>
+
+        <div class="controls">
+            <button id="startButton">Start Sharing</button>
+            <button id="stopButton" disabled>Stop Sharing</button>
+        </div>
+
+        <div id="shareUrlContainer" style="display: none;">
+            <h3>Share this URL with others to join:</h3>
+            <div class="share-url" id="shareUrl"></div>
+        </div>
+
+        <video id="video" autoplay playsinline muted></video>
+    </div>
+
+    <script>
+        let peer;
+        let stream;
+        let connections = new Set();
+
+        const video = document.getElementById('video');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const shareUrlContainer = document.getElementById('shareUrlContainer');
+        const shareUrlDiv = document.getElementById('shareUrl');
+        const microphoneToggle = document.getElementById('microphoneToggle');
+        const systemAudioToggle = document.getElementById('systemAudioToggle');
+
+        // Initialize PeerJS
+        function initPeer() {
+            peer = new Peer();
+            
+            peer.on('open', (id) => {
+                const shareUrl = `${window.location.href}?peer=${id}`;
+                shareUrlDiv.textContent = shareUrl;
+                shareUrlContainer.style.display = 'block';
+            });
+
+            peer.on('connection', (conn) => {
+                connections.add(conn);
+                setupConnection(conn);
+            });
+
+            peer.on('call', (call) => {
+                call.answer(stream);
+            });
+        }
+
+        function setupConnection(conn) {
+            conn.on('close', () => {
+                connections.delete(conn);
+            });
+        }
+
+        async function startSharing() {
+            try {
+                const displayMediaOptions = {
+                    video: {
+                        cursor: "always"
+                    },
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        sampleRate: 44100
+                    }
+                };
+
+                if (systemAudioToggle.checked) {
+                    displayMediaOptions.audio = true;
+                }
+
+                // Get screen stream
+                stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+
+                // If microphone is enabled, get microphone stream and merge
+                if (microphoneToggle.checked) {
+                    const micStream = await navigator.mediaDevices.getUserMedia({
+                        audio: true,
+                        video: false
+                    });
+                    
+                    const tracks = [...stream.getTracks(), ...micStream.getTracks()];
+                    stream = new MediaStream(tracks);
+                }
+
+                video.srcObject = stream;
+                startButton.disabled = true;
+                stopButton.disabled = false;
+
+                // Initialize peer connection if not already done
+                if (!peer) {
+                    initPeer();
+                }
+
+                // Handle stream ending
+                stream.getVideoTracks()[0].onended = () => {
+                    stopSharing();
+                };
+
+            } catch (err) {
+                console.error("Error: " + err);
+            }
+        }
+
+        function stopSharing() {
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+            }
+            video.srcObject = null;
+            startButton.disabled = false;
+            stopButton.disabled = true;
+            shareUrlContainer.style.display = 'none';
+            
+            // Close all connections
+            connections.forEach(conn => conn.close());
+            connections.clear();
+
+            if (peer) {
+                peer.destroy();
+                peer = null;
+            }
+        }
+
+        // Check if joining as viewer
+        window.onload = () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const peerId = urlParams.get('peer');
+
+            if (peerId) {
+                // Viewer mode
+                startButton.style.display = 'none';
+                stopButton.style.display = 'none';
+                document.querySelector('.options').style.display = 'none';
+                
+                peer = new Peer();
+                peer.on('open', () => {
+                    const conn = peer.connect(peerId);
+                    const call = peer.call(peerId);
+                    
+                    call.on('stream', (remoteStream) => {
+                        video.srcObject = remoteStream;
+                    });
+                });
+            }
+        };
+
+        startButton.addEventListener('click', startSharing);
+        stopButton.addEventListener('click', stopSharing);
+    </script>
+</body>
+</html>
